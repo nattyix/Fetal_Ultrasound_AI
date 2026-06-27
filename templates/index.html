@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FetalGuard-AI | Early Pregnancy Risk Detection</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+
+<!-- ── Sidebar ── -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-logo">🧬 FetalGuard-AI</div>
+
+  <nav class="sidebar-nav">
+    <button class="nav-btn active" data-tab="tab-analyze">
+      <span class="nav-icon">🧠</span> Brain Plane Analysis
+    </button>
+    <button class="nav-btn" data-tab="tab-pe">
+      <span class="nav-icon">🩺</span> Preeclampsia Risk
+    </button>
+    <button class="nav-btn" data-tab="tab-history">
+      <span class="nav-icon">📊</span> Session History
+    </button>
+  </nav>
+
+  <div class="sidebar-section">
+    <div class="sidebar-label">MODEL</div>
+    <div class="sidebar-info">DenseNet121 · MONAI</div>
+    <div class="sidebar-info">Accuracy: 89.75% ± 1.19%</div>
+    <div class="sidebar-info">5-Fold Stratified CV</div>
+    <div class="sidebar-info">Input: 224 × 224 px</div>
+    <div class="sidebar-info">Classes: 4 anatomical planes</div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-label">RISK LEVELS</div>
+    <div class="risk-legend"><span class="dot low"></span> LOW — Routine monitoring</div>
+    <div class="risk-legend"><span class="dot mod"></span> MODERATE — Screening warranted</div>
+    <div class="risk-legend"><span class="dot high"></span> HIGH — Urgent review</div>
+    <div class="risk-legend"><span class="dot sev"></span> SEVERE — Hospitalisation</div>
+  </div>
+
+  <div class="sidebar-section" id="session-stats" style="display:none;">
+    <div class="sidebar-label">SESSION</div>
+    <div class="stat-row"><span>Analyses</span><span id="stat-analyses">0</span></div>
+    <div class="stat-row"><span>PE Assessments</span><span id="stat-pe">0</span></div>
+    <div class="stat-row"><span>Avg Confidence</span><span id="stat-conf">—</span></div>
+  </div>
+</aside>
+
+<!-- ── Main ── -->
+<main class="main-content">
+
+  <!-- Header -->
+  <header class="hero">
+    <h1 class="hero-title">🧬 FetalGuard-AI</h1>
+    <p class="hero-sub">Early Pregnancy Risk Detection · DenseNet121 · MONAI</p>
+    <div class="badge-row">
+      <span class="tech-badge">DenseNet121</span>
+      <span class="tech-badge">Grad-CAM</span>
+      <span class="tech-badge">5-Fold CV</span>
+      <span class="tech-badge">Preeclampsia</span>
+      <span class="tech-badge">Flask API</span>
+    </div>
+  </header>
+
+  <!-- ══ TAB: ANALYZE ══ -->
+  <section id="tab-analyze" class="tab-panel active">
+
+    <!-- Upload zone -->
+    <div class="glass-card upload-zone" id="upload-zone">
+      <input type="file" id="file-input" accept=".png,.jpg,.jpeg" hidden />
+      <div class="upload-inner" id="upload-inner">
+        <div class="upload-icon">📤</div>
+        <div class="upload-title">Drop ultrasound image here</div>
+        <div class="upload-sub">PNG / JPG · Max 16 MB</div>
+        <button class="btn-primary" onclick="document.getElementById('file-input').click()">Choose File</button>
+      </div>
+    </div>
+
+    <!-- Spinner -->
+    <div class="spinner-wrap" id="spinner" style="display:none;">
+      <div class="spinner"></div>
+      <p>Analysing with DenseNet121…</p>
+    </div>
+
+    <!-- Results (hidden until analysis) -->
+    <div id="results" style="display:none;">
+
+      <!-- Image pair -->
+      <div class="glass-card">
+        <div class="card-title">📸 Scan &amp; Grad-CAM Heatmap</div>
+        <div class="img-grid">
+          <div>
+            <img id="orig-img" src="" alt="Original scan" />
+            <div class="img-label">Original Scan</div>
+          </div>
+          <div>
+            <img id="heat-img" src="" alt="Grad-CAM heatmap" />
+            <div class="img-label">Grad-CAM Heatmap</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quality -->
+      <div class="glass-card">
+        <div class="card-title">🔍 Image Quality</div>
+        <div class="quality-grid">
+          <div class="quality-score-box">
+            <div class="quality-score" id="q-score">—</div>
+            <div class="quality-level" id="q-level">—</div>
+          </div>
+          <div class="quality-metrics" id="q-metrics"></div>
+          <div class="quality-notes" id="q-notes"></div>
+        </div>
+      </div>
+
+      <!-- Verdict -->
+      <div id="verdict-box" class="verdict-box"></div>
+
+      <!-- Confidence + Risk -->
+      <div class="glass-card result-card">
+        <div class="plane-title" id="r-plane">—</div>
+        <div class="conf-value" id="r-conf">—</div>
+        <div class="conf-label">Confidence Score</div>
+        <div class="risk-row">
+          <span class="risk-badge" id="r-risk">—</span>
+        </div>
+        <div class="risk-msg" id="r-risk-msg">—</div>
+      </div>
+
+      <!-- Clinical info -->
+      <div class="glass-card">
+        <div class="card-title">📋 Clinical Information</div>
+        <div class="info-grid" id="clinical-info"></div>
+      </div>
+
+      <!-- Confidence bars -->
+      <div class="glass-card">
+        <div class="card-title">📊 Confidence Distribution</div>
+        <div id="conf-bars"></div>
+      </div>
+
+      <!-- Report buttons -->
+      <div class="glass-card">
+        <div class="card-title">📄 Generate Report</div>
+        <div class="btn-row">
+          <button class="btn-primary" id="btn-html-report" onclick="downloadHTMLReport()">📥 Download HTML Report</button>
+        </div>
+      </div>
+
+      <div class="disclaimer">
+        ⚠️ <strong>Medical Disclaimer:</strong> AI decision-support tool only. Not a clinical diagnosis.
+        All results must be reviewed by a qualified healthcare professional.
+      </div>
+    </div>
+
+    <!-- How-to (shown before upload) -->
+    <div class="glass-card" id="how-to">
+      <div class="card-title">🎯 How to Use FetalGuard-AI</div>
+      <ol class="how-list">
+        <li><strong>Upload</strong> a fetal ultrasound image (PNG / JPG)</li>
+        <li><strong>Quality Check</strong> — automatic image quality scoring with detailed metrics</li>
+        <li><strong>Brain Position Verdict</strong> — Standard ✅ / Uncertain ⚠️ / Non-Standard 🔄</li>
+        <li><strong>Grad-CAM Heatmap</strong> — see exactly what the AI is attending to</li>
+        <li><strong>PE Risk Tab</strong> — enter maternal parameters for preeclampsia risk score</li>
+        <li><strong>Export</strong> an HTML clinical report with embedded images</li>
+      </ol>
+    </div>
+
+  </section>
+
+  <!-- ══ TAB: PREECLAMPSIA ══ -->
+  <section id="tab-pe" class="tab-panel">
+    <div class="glass-card">
+      <div class="card-title">🩺 Preeclampsia Early Risk Detection</div>
+      <p class="pe-subtitle">Enter maternal clinical parameters. The scoring engine applies ACOG/NICE-aligned weighted criteria.</p>
+
+      <div class="form-section-label">💉 Vital Signs</div>
+      <div class="form-grid-3">
+        <div class="form-group">
+          <label>Systolic BP (mmHg)</label>
+          <input type="number" id="sbp" value="118" min="60" max="250" />
+        </div>
+        <div class="form-group">
+          <label>Diastolic BP (mmHg)</label>
+          <input type="number" id="dbp" value="76" min="40" max="160" />
+        </div>
+        <div class="form-group">
+          <label>Gestational Age (weeks)</label>
+          <input type="number" id="ga" value="28" min="4" max="42" />
+        </div>
+      </div>
+
+      <div class="form-section-label">🧪 Proteinuria</div>
+      <div class="form-group">
+        <label>Urine Protein Level</label>
+        <select id="proteinuria">
+          <option value="none" selected>None</option>
+          <option value="trace">Trace</option>
+          <option value="1+">1+</option>
+          <option value="2+">2+</option>
+          <option value="3+">3+</option>
+          <option value="massive">Massive</option>
+        </select>
+      </div>
+
+      <div class="form-section-label">🧠 Neurological &amp; End-Organ Symptoms</div>
+      <div class="checkbox-grid">
+        <label class="check-label"><input type="checkbox" id="severe_headache" /><span>Severe / persistent headache</span></label>
+        <label class="check-label"><input type="checkbox" id="visual_dist" /><span>Visual disturbances</span></label>
+        <label class="check-label"><input type="checkbox" id="epigastric" /><span>Epigastric / RUQ pain</span></label>
+        <label class="check-label"><input type="checkbox" id="edema" /><span>Sudden severe oedema</span></label>
+      </div>
+
+      <div class="form-section-label">👩 Maternal Risk Factors</div>
+      <div class="checkbox-grid">
+        <label class="check-label"><input type="checkbox" id="nullip" /><span>Nulliparous</span></label>
+        <label class="check-label"><input type="checkbox" id="prior_pe" /><span>Prior preeclampsia</span></label>
+        <label class="check-label"><input type="checkbox" id="mult_gest" /><span>Multiple gestation</span></label>
+        <label class="check-label"><input type="checkbox" id="chronic_htn" /><span>Chronic hypertension</span></label>
+        <label class="check-label"><input type="checkbox" id="diabetes" /><span>Diabetes (any)</span></label>
+        <label class="check-label"><input type="checkbox" id="kidney" /><span>Kidney disease</span></label>
+        <label class="check-label"><input type="checkbox" id="autoimmune" /><span>Autoimmune disease</span></label>
+        <label class="check-label"><input type="checkbox" id="obesity" /><span>BMI &gt; 30</span></label>
+        <label class="check-label"><input type="checkbox" id="age35" /><span>Age &gt; 35</span></label>
+        <label class="check-label"><input type="checkbox" id="ivf" /><span>IVF conception</span></label>
+      </div>
+
+      <details class="lab-details">
+        <summary>🔬 Laboratory Markers (optional but recommended)</summary>
+        <div class="form-grid-3" style="margin-top:16px;">
+          <div class="form-group">
+            <label>Platelet count (×10⁹/L)</label>
+            <input type="text" id="platelets" placeholder="e.g. 145" />
+          </div>
+          <div class="form-group">
+            <label>Serum creatinine (mg/dL)</label>
+            <input type="text" id="creatinine" placeholder="e.g. 0.85" />
+          </div>
+          <div class="form-group">
+            <label>sFlt-1/PlGF ratio</label>
+            <input type="text" id="sflt1" placeholder="e.g. 42" />
+          </div>
+        </div>
+        <div class="checkbox-grid" style="margin-top:8px;">
+          <label class="check-label"><input type="checkbox" id="alt_ast" /><span>ALT/AST elevated</span></label>
+          <label class="check-label"><input type="checkbox" id="uric_acid" /><span>Uric acid elevated</span></label>
+        </div>
+      </details>
+
+      <button class="btn-primary btn-full" id="btn-pe-assess" onclick="runPEAssessment()">
+        🔍 Run Preeclampsia Risk Assessment
+      </button>
+    </div>
+
+    <div id="pe-spinner" class="spinner-wrap" style="display:none;">
+      <div class="spinner"></div>
+      <p>Running ACOG/NICE risk engine…</p>
+    </div>
+
+    <div id="pe-results" style="display:none;"></div>
+  </section>
+
+  <!-- ══ TAB: HISTORY ══ -->
+  <section id="tab-history" class="tab-panel">
+    <div class="glass-card">
+      <div class="card-title">🔬 Ultrasound Analysis History</div>
+      <div id="us-history-stats" style="display:none;" class="stats-row"></div>
+      <div id="us-history-list"><p class="empty-msg">No ultrasound analyses yet.</p></div>
+      <button class="btn-danger" id="btn-clear-us" style="display:none;" onclick="clearHistory('us')">🗑️ Clear US History</button>
+    </div>
+
+    <div class="glass-card" style="margin-top:24px;">
+      <div class="card-title">🩺 Preeclampsia Assessment History</div>
+      <div id="pe-history-stats" style="display:none;" class="stats-row"></div>
+      <div id="pe-history-list"><p class="empty-msg">No preeclampsia assessments yet.</p></div>
+      <div class="btn-row" id="pe-hist-btns" style="display:none;">
+        <button class="btn-primary" onclick="exportPEHistory()">📥 Export PE History (JSON)</button>
+        <button class="btn-danger" onclick="clearHistory('pe')">🗑️ Clear PE History</button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script src="/static/js/main.js"></script>
+</body>
+</html>

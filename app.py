@@ -1,10 +1,13 @@
 """
-FetalGuard-AI — Flask Application (Render-optimised)
+FetalGuard-AI — Flask Application (Render free tier optimised)
+Strategy: resize images to 256px, JPEG quality 60, skip base64 in /analyze,
+serve images via separate /image/<id> endpoint to avoid huge JSON payloads.
 """
 import traceback
 import os
 import gc
-from flask import Flask, render_template, request, jsonify
+import uuid
+from flask import Flask, render_template, request, jsonify, send_file
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -21,9 +24,10 @@ from scripts.preeclampsia_risk import PreeclampsiaInputs, assess_preeclampsia_ri
 # ── Config ────────────────────────────────────────────────────────────────
 MODEL_PATH      = "models/fetal_ultrasound_model.pth"
 IMAGE_SIZE      = (224, 224)
-DISABLE_GRADCAM = os.environ.get("DISABLE_GRADCAM", "1") == "1"
+THUMB_SIZE      = (256, 256)   # small thumbnails to keep JSON tiny
+JPEG_QUALITY    = 55           # aggressive compression
+DISABLE_GRADCAM = os.environ.get("DISABLE_GRADCAM", "0") == "1"
 
-# Limit CPU threads to save memory on Render free tier
 torch.set_num_threads(1)
 
 CLASSES = ["Trans-thalamic", "Trans-ventricular", "Trans-cerebellum", "Diverse / Other"]
@@ -65,6 +69,20 @@ PLANE_INFO = {
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 
+# ── In-memory image store (keyed by session id) ───────────────────────────
+# Stores compressed JPEG bytes; auto-cleared after 10 entries
+_image_store: dict = {}
+MAX_STORE = 10
+
+def _store_image(img_bytes: bytes) -> str:
+    key = uuid.uuid4().hex
+    _image_store[key] = img_bytes
+    # Keep store small — drop oldest if over limit
+    if len(_image_store) > MAX_STORE:
+        oldest = next(iter(_image_store))
+        del _image_store[oldest]
+    return key
+
 # ── Device & transform ────────────────────────────────────────────────────
 device = torch.device("cpu")
 
@@ -74,23 +92,21 @@ transform = Compose([
     ScaleIntensity(),
 ])
 
-# ── Model — float32, loaded once at module level ──────────────────────────
-# DO NOT use .half() — MONAI DenseNet forward pass breaks with float16 on CPU
+# ── Model ─────────────────────────────────────────────────────────────────
 print("[FetalGuard] Loading model...", flush=True)
 model = DenseNet121(spatial_dims=2, in_channels=3, out_channels=4)
 model.load_state_dict(
     torch.load(MODEL_PATH, map_location="cpu", weights_only=True)
 )
 model.eval()
-gc.collect()  # free any loader overhead immediately
-print(f"[FetalGuard] Model ready. GradCAM={'OFF' if DISABLE_GRADCAM else 'ON'}", flush=True)
+gc.collect()
+print(f"[FetalGuard] Ready. GradCAM={'OFF' if DISABLE_GRADCAM else 'ON'}", flush=True)
 
 
 # ── Grad-CAM ──────────────────────────────────────────────────────────────
 def grad_cam_generate(mdl, image_np, class_idx):
     img_h, img_w = image_np.shape[:2]
-    inp = transform(image_np).unsqueeze(0)  # float32
-
+    inp = transform(image_np).unsqueeze(0)
     feature_holder = {}
 
     def _fwd_hook(module, inp_, out_):
@@ -106,12 +122,10 @@ def grad_cam_generate(mdl, image_np, class_idx):
         feat = feature_holder.get("feat")
         if feat is None:
             return np.zeros((img_h, img_w), dtype=np.float32)
-
         output[0, class_idx].backward()
         grads = feat.grad
         if grads is None:
             return np.zeros((img_h, img_w), dtype=np.float32)
-
         weights = grads.mean(dim=(2, 3), keepdim=True)
         cam     = F.relu((weights * feat).sum(dim=1)).squeeze()
         cam     = cam.detach().cpu().numpy()
@@ -126,11 +140,17 @@ def grad_cam_generate(mdl, image_np, class_idx):
         gc.collect()
 
 
-def blank_heatmap(image_np):
-    overlay = image_np.copy()
-    cv2.putText(overlay, "Grad-CAM disabled (low-memory mode)",
-                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-    return overlay
+# ── Image helpers ─────────────────────────────────────────────────────────
+def compress_to_jpeg(img_np_rgb: np.ndarray) -> bytes:
+    """Resize to THUMB_SIZE and compress to JPEG bytes."""
+    pil = Image.fromarray(img_np_rgb)
+    pil.thumbnail(THUMB_SIZE, Image.LANCZOS)
+    buf = BytesIO()
+    pil.save(buf, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+    return buf.getvalue()
+
+def overlay_to_rgb(overlay_bgr: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB)
 
 
 # ── Image quality scoring ─────────────────────────────────────────────────
@@ -173,33 +193,21 @@ def assess_image_quality(image_np):
 
 # ── Inference ─────────────────────────────────────────────────────────────
 def predict(image_np):
-    inp = transform(image_np).unsqueeze(0)  # float32
+    inp = transform(image_np).unsqueeze(0)
     with torch.inference_mode():
         outputs    = model(inp)
         probs      = torch.softmax(outputs, dim=1)
         conf, pred = torch.max(probs, dim=1)
     result = pred.item(), conf.item(), probs[0].cpu().numpy()
-    gc.collect() 
+    del inp, outputs, probs
+    gc.collect()
     return result
-
 
 
 def risk_indicator(confidence):
     if confidence >= 0.85:   return "LOW",      "Highly confident classification"
     elif confidence >= 0.60: return "MODERATE", "Review recommended for clinical correlation"
     else:                    return "HIGH",      "Manual expert review strongly recommended"
-
-
-def image_to_b64(img, is_pil=False):
-    buf = BytesIO()
-    if is_pil:
-        img.thumbnail((512, 512), Image.LANCZOS)
-        img.save(buf, format="JPEG", quality=80)
-    else:
-        pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        pil.thumbnail((512, 512), Image.LANCZOS)
-        pil.save(buf, format="JPEG", quality=80)
-    return base64.b64encode(buf.getvalue()).decode()
 
 
 # ── Routes ────────────────────────────────────────────────────────────────
@@ -213,6 +221,15 @@ def health():
     return jsonify({"status": "ok", "gradcam": not DISABLE_GRADCAM})
 
 
+# Serve stored images by key (avoids embedding in JSON)
+@app.route("/image/<key>")
+def serve_image(key):
+    data = _image_store.get(key)
+    if not data:
+        return "", 404
+    return send_file(BytesIO(data), mimetype="image/jpeg")
+
+
 @app.route("/analyze", methods=["POST"])
 def analyze():
     if "image" not in request.files:
@@ -223,17 +240,36 @@ def analyze():
     try:
         image_pil = Image.open(file.stream).convert("RGB")
         image_np  = np.array(image_pil)
+        del image_pil
+        gc.collect()
 
+        # 1. Quality
         quality_data = assess_image_quality(image_np)
+
+        # 2. Inference
         pred, conf, all_probs = predict(image_np)
 
+        # 3. Grad-CAM
         if DISABLE_GRADCAM:
-            overlay = blank_heatmap(image_np)
+            overlay_rgb = image_np.copy()
         else:
-            cam_map = grad_cam_generate(model, image_np, pred)
-            heatmap = cv2.applyColorMap(np.uint8(255 * cam_map), cv2.COLORMAP_JET)
-            overlay = cv2.addWeighted(image_np, 0.6, heatmap, 0.4, 0)
+            cam_map     = grad_cam_generate(model, image_np, pred)
+            heatmap_bgr = cv2.applyColorMap(np.uint8(255 * cam_map), cv2.COLORMAP_JET)
+            overlay_bgr = cv2.addWeighted(image_np, 0.6, heatmap_bgr, 0.4, 0)
+            overlay_rgb = overlay_to_rgb(overlay_bgr)
+            del cam_map, heatmap_bgr, overlay_bgr
+            gc.collect()
 
+        # 4. Compress & store images — return keys not base64
+        orig_bytes    = compress_to_jpeg(image_np)
+        overlay_bytes = compress_to_jpeg(overlay_rgb)
+        orig_key      = _store_image(orig_bytes)
+        overlay_key   = _store_image(overlay_bytes)
+
+        del image_np, overlay_rgb, orig_bytes, overlay_bytes
+        gc.collect()
+
+        # 5. Labels
         risk, risk_message = risk_indicator(conf)
         plane_name = CLASSES[pred]
         plane_data = PLANE_INFO[plane_name]
@@ -262,13 +298,31 @@ def analyze():
                 "issues":          quality_data["issues"],
                 "recommendations": quality_data["recommendations"],
             },
-            "original_b64":   image_to_b64(image_pil, is_pil=True),
-            "heatmap_b64":    image_to_b64(overlay),
+            # Return URL keys instead of base64 blobs
+            "orig_key":       orig_key,
+            "overlay_key":    overlay_key,
             "timestamp":      datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "filename":       file.filename,
             "gradcam_active": not DISABLE_GRADCAM,
         })
 
+    except Exception:
+        traceback.print_exc()
+        return jsonify({"error": traceback.format_exc()}), 500
+
+
+@app.route("/report/html", methods=["POST"])
+def report_html():
+    try:
+        d = request.json
+        # Fetch stored images and embed as base64 for the report
+        orig_key    = d.get("orig_key", "")
+        overlay_key = d.get("overlay_key", "")
+        orig_b64    = base64.b64encode(_image_store.get(orig_key, b"")).decode()
+        overlay_b64 = base64.b64encode(_image_store.get(overlay_key, b"")).decode()
+        d["original_b64"] = orig_b64
+        d["heatmap_b64"]  = overlay_b64
+        return jsonify({"html": _build_html_report(d)})
     except Exception:
         traceback.print_exc()
         return jsonify({"error": traceback.format_exc()}), 500
@@ -327,15 +381,6 @@ def preeclampsia():
             "summary":            result.summary,
             "timestamp":          datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
-    except Exception:
-        traceback.print_exc()
-        return jsonify({"error": traceback.format_exc()}), 500
-
-
-@app.route("/report/html", methods=["POST"])
-def report_html():
-    try:
-        return jsonify({"html": _build_html_report(request.json)})
     except Exception:
         traceback.print_exc()
         return jsonify({"error": traceback.format_exc()}), 500
@@ -403,6 +448,5 @@ img{{width:100%;border-radius:8px;}}
 </div></body></html>"""
 
 
-# ── Local dev entry point ─────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(debug=False, host="0.0.0.0", port=5000, use_reloader=False)

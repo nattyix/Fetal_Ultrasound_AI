@@ -76,8 +76,8 @@ async function runAnalysis(file) {
 /* ── Render analysis ─────────────────────────────────────────────────────── */
 function renderAnalysis(d) {
   // Images
-  document.getElementById("orig-img").src  = "data:image/png;base64," + d.original_b64;
-  document.getElementById("heat-img").src  = "data:image/png;base64," + d.heatmap_b64;
+  document.getElementById("orig-img").src  = "/image/" + d.orig_key;
+  document.getElementById("heat-img").src  = "/image/" + d.overlay_key;
 
   // Quality
   const qs = document.getElementById("q-score");

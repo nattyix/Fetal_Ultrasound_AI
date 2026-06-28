@@ -1,17 +1,9 @@
 """
 FetalGuard-AI — Flask Application (Render-optimised)
-Memory budget: < 512 MB (Render free tier)
-
-Optimisations applied
----------------------
-- Model loaded once at module level (gunicorn pre-load via --preload)
-- Grad-CAM disabled in low-memory mode (env DISABLE_GRADCAM=1)
-- Images resized to 224x224 before base64 encoding (smaller payload)
-- torch.inference_mode() instead of no_grad (lower overhead)
-- weights_only=True on torch.load (safer + faster)
 """
 import traceback
 import os
+import gc
 from flask import Flask, render_template, request, jsonify
 import torch
 import torch.nn.functional as F
@@ -29,8 +21,10 @@ from scripts.preeclampsia_risk import PreeclampsiaInputs, assess_preeclampsia_ri
 # ── Config ────────────────────────────────────────────────────────────────
 MODEL_PATH      = "models/fetal_ultrasound_model.pth"
 IMAGE_SIZE      = (224, 224)
-# Set env var DISABLE_GRADCAM=1 on Render to skip Grad-CAM and save ~200MB
-DISABLE_GRADCAM = os.environ.get("DISABLE_GRADCAM", "0") == "1"
+DISABLE_GRADCAM = os.environ.get("DISABLE_GRADCAM", "1") == "1"
+
+# Limit CPU threads to save memory on Render free tier
+torch.set_num_threads(1)
 
 CLASSES = ["Trans-thalamic", "Trans-ventricular", "Trans-cerebellum", "Diverse / Other"]
 PLANE_INFO = {
@@ -69,10 +63,10 @@ PLANE_INFO = {
 }
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024  # 8 MB (reduced from 16)
+app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 
 # ── Device & transform ────────────────────────────────────────────────────
-device = torch.device("cpu")   # Render free tier is CPU only
+device = torch.device("cpu")
 
 transform = Compose([
     EnsureChannelFirst(channel_dim=-1),
@@ -80,34 +74,27 @@ transform = Compose([
     ScaleIntensity(),
 ])
 
-# ── Model — loaded once at module level ───────────────────────────────────
-# Gunicorn must be started with --preload so this runs once in the master
-# process and workers inherit the already-loaded model via fork.
+# ── Model — float32, loaded once at module level ──────────────────────────
+# DO NOT use .half() — MONAI DenseNet forward pass breaks with float16 on CPU
 print("[FetalGuard] Loading model...", flush=True)
-_m = DenseNet121(spatial_dims=2, in_channels=3, out_channels=4)
-_m.load_state_dict(
+model = DenseNet121(spatial_dims=2, in_channels=3, out_channels=4)
+model.load_state_dict(
     torch.load(MODEL_PATH, map_location="cpu", weights_only=True)
 )
-_m.eval()
-# Convert to half precision to cut memory from ~330MB → ~165MB
-# Comment this out if you see NaN predictions
-_m = _m.half()
-model = _m
-print("[FetalGuard] Model ready.", flush=True)
+model.eval()
+gc.collect()  # free any loader overhead immediately
+print(f"[FetalGuard] Model ready. GradCAM={'OFF' if DISABLE_GRADCAM else 'ON'}", flush=True)
 
 
 # ── Grad-CAM ──────────────────────────────────────────────────────────────
 def grad_cam_generate(mdl, image_np, class_idx):
-    """Hook-free Grad-CAM compatible with MONAI DenseNet121 in-place ops."""
     img_h, img_w = image_np.shape[:2]
-
-    # Use float32 for grad-cam regardless of model precision
-    inp = transform(image_np).unsqueeze(0).float()
+    inp = transform(image_np).unsqueeze(0)  # float32
 
     feature_holder = {}
 
     def _fwd_hook(module, inp_, out_):
-        feat = out_.clone().float()   # ensure float32
+        feat = out_.clone()
         feat.retain_grad()
         feature_holder["feat"] = feat
         return feat
@@ -115,10 +102,8 @@ def grad_cam_generate(mdl, image_np, class_idx):
     hook = mdl.features.register_forward_hook(_fwd_hook)
     try:
         mdl.zero_grad()
-        # Temporarily cast model to float32 for backward pass
-        mdl_f = mdl.float()
-        output = mdl_f(inp)
-        feat   = feature_holder.get("feat")
+        output = mdl(inp)
+        feat = feature_holder.get("feat")
         if feat is None:
             return np.zeros((img_h, img_w), dtype=np.float32)
 
@@ -138,12 +123,10 @@ def grad_cam_generate(mdl, image_np, class_idx):
     finally:
         hook.remove()
         mdl.zero_grad()
-        # Cast back to half to restore memory savings
-        mdl.half()
+        gc.collect()
 
 
 def blank_heatmap(image_np):
-    """Return a neutral grey overlay when Grad-CAM is disabled."""
     overlay = image_np.copy()
     cv2.putText(overlay, "Grad-CAM disabled (low-memory mode)",
                 (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
@@ -190,10 +173,10 @@ def assess_image_quality(image_np):
 
 # ── Inference ─────────────────────────────────────────────────────────────
 def predict(image_np):
-    inp = transform(image_np).unsqueeze(0).half()   # match model dtype
+    inp = transform(image_np).unsqueeze(0)  # float32
     with torch.inference_mode():
         outputs    = model(inp)
-        probs      = torch.softmax(outputs.float(), dim=1)
+        probs      = torch.softmax(outputs, dim=1)
         conf, pred = torch.max(probs, dim=1)
     return pred.item(), conf.item(), probs[0].cpu().numpy()
 
@@ -201,13 +184,12 @@ def predict(image_np):
 def risk_indicator(confidence):
     if confidence >= 0.85:   return "LOW",      "Highly confident classification"
     elif confidence >= 0.60: return "MODERATE", "Review recommended for clinical correlation"
-    else:                    return "HIGH",     "Manual expert review strongly recommended"
+    else:                    return "HIGH",      "Manual expert review strongly recommended"
 
 
 def image_to_b64(img, is_pil=False):
     buf = BytesIO()
     if is_pil:
-        # Resize to 512px wide to reduce payload size
         img.thumbnail((512, 512), Image.LANCZOS)
         img.save(buf, format="JPEG", quality=80)
     else:
@@ -260,15 +242,15 @@ def analyze():
         else:                               verdict = "NON_STANDARD"
 
         return jsonify({
-            "success":      True,
-            "plane":        plane_name,
-            "plane_color":  plane_data["color"],
-            "confidence":   round(conf * 100, 2),
-            "risk":         risk,
-            "risk_message": risk_message,
-            "verdict":      verdict,
-            "plane_info":   plane_data,
-            "all_probs":    {CLASSES[i]: round(float(all_probs[i]) * 100, 2) for i in range(4)},
+            "success":        True,
+            "plane":          plane_name,
+            "plane_color":    plane_data["color"],
+            "confidence":     round(conf * 100, 2),
+            "risk":           risk,
+            "risk_message":   risk_message,
+            "verdict":        verdict,
+            "plane_info":     plane_data,
+            "all_probs":      {CLASSES[i]: round(float(all_probs[i]) * 100, 2) for i in range(4)},
             "quality": {
                 "score":           round(quality_data["score"], 1),
                 "level":           quality_data["level"],
@@ -277,10 +259,10 @@ def analyze():
                 "issues":          quality_data["issues"],
                 "recommendations": quality_data["recommendations"],
             },
-            "original_b64": image_to_b64(image_pil, is_pil=True),
-            "heatmap_b64":  image_to_b64(overlay),
-            "timestamp":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "filename":     file.filename,
+            "original_b64":   image_to_b64(image_pil, is_pil=True),
+            "heatmap_b64":    image_to_b64(overlay),
+            "timestamp":      datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "filename":       file.filename,
             "gradcam_active": not DISABLE_GRADCAM,
         })
 

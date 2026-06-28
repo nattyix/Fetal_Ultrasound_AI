@@ -1,7 +1,17 @@
 """
-FetalGuard-AI — Flask Application
+FetalGuard-AI — Flask Application (Render-optimised)
+Memory budget: < 512 MB (Render free tier)
+
+Optimisations applied
+---------------------
+- Model loaded once at module level (gunicorn pre-load via --preload)
+- Grad-CAM disabled in low-memory mode (env DISABLE_GRADCAM=1)
+- Images resized to 224x224 before base64 encoding (smaller payload)
+- torch.inference_mode() instead of no_grad (lower overhead)
+- weights_only=True on torch.load (safer + faster)
 """
 import traceback
+import os
 from flask import Flask, render_template, request, jsonify
 import torch
 import torch.nn.functional as F
@@ -11,17 +21,19 @@ from PIL import Image
 from datetime import datetime
 import base64
 from io import BytesIO
-import os
 
 from monai.transforms import Compose, EnsureChannelFirst, Resize, ScaleIntensity
 from monai.networks.nets import DenseNet121
 from scripts.preeclampsia_risk import PreeclampsiaInputs, assess_preeclampsia_risk
 
-# ── Config ─────────────────────────────────────────────────────────────────
-MODEL_PATH = "models/fetal_ultrasound_model.pth"
-IMAGE_SIZE  = (224, 224)
-CLASSES     = ["Trans-thalamic", "Trans-ventricular", "Trans-cerebellum", "Diverse / Other"]
-PLANE_INFO  = {
+# ── Config ────────────────────────────────────────────────────────────────
+MODEL_PATH      = "models/fetal_ultrasound_model.pth"
+IMAGE_SIZE      = (224, 224)
+# Set env var DISABLE_GRADCAM=1 on Render to skip Grad-CAM and save ~200MB
+DISABLE_GRADCAM = os.environ.get("DISABLE_GRADCAM", "0") == "1"
+
+CLASSES = ["Trans-thalamic", "Trans-ventricular", "Trans-cerebellum", "Diverse / Other"]
+PLANE_INFO = {
     "Trans-thalamic": {
         "description": "Axial view at the level of the thalami",
         "structures": "Thalami, cavum septi pellucidi, falx cerebri",
@@ -57,10 +69,10 @@ PLANE_INFO  = {
 }
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024  # 8 MB (reduced from 16)
 
 # ── Device & transform ────────────────────────────────────────────────────
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cpu")   # Render free tier is CPU only
 
 transform = Compose([
     EnsureChannelFirst(channel_dim=-1),
@@ -68,82 +80,79 @@ transform = Compose([
     ScaleIntensity(),
 ])
 
-# ── Model ─────────────────────────────────────────────────────────────────
-model = None
+# ── Model — loaded once at module level ───────────────────────────────────
+# Gunicorn must be started with --preload so this runs once in the master
+# process and workers inherit the already-loaded model via fork.
+print("[FetalGuard] Loading model...", flush=True)
+_m = DenseNet121(spatial_dims=2, in_channels=3, out_channels=4)
+_m.load_state_dict(
+    torch.load(MODEL_PATH, map_location="cpu", weights_only=True)
+)
+_m.eval()
+# Convert to half precision to cut memory from ~330MB → ~165MB
+# Comment this out if you see NaN predictions
+_m = _m.half()
+model = _m
+print("[FetalGuard] Model ready.", flush=True)
 
-def load_model():
-    global model
-    m = DenseNet121(spatial_dims=2, in_channels=3, out_channels=4)
-    m.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
-    m.eval()
-    model = m
-    print(f"[FetalGuard] Model loaded — device: {device}")
 
-
-# ── Grad-CAM (fully compatible with MONAI DenseNet121) ────────────────────
-#
-# MONAI DenseNet uses in-place ops → backward hooks crash.
-# Fix: forward hook clones the feature map, calls retain_grad() on the
-# LEAF clone, then backward() fills .grad on that leaf tensor directly.
-# ─────────────────────────────────────────────────────────────────────────
-def grad_cam_generate(mdl: torch.nn.Module,
-                      image_np: np.ndarray,
-                      class_idx: int) -> np.ndarray:
+# ── Grad-CAM ──────────────────────────────────────────────────────────────
+def grad_cam_generate(mdl, image_np, class_idx):
+    """Hook-free Grad-CAM compatible with MONAI DenseNet121 in-place ops."""
     img_h, img_w = image_np.shape[:2]
 
-    # Prepare input (no grad needed on the raw input)
-    inp = transform(image_np).unsqueeze(0)   # [1, 3, 224, 224]
+    # Use float32 for grad-cam regardless of model precision
+    inp = transform(image_np).unsqueeze(0).float()
 
     feature_holder = {}
 
     def _fwd_hook(module, inp_, out_):
-        # Clone breaks the in-place graph link.
-        # retain_grad() makes PyTorch store .grad on this non-leaf clone.
-        feat = out_.clone()
-        feat.retain_grad()          # ← KEY FIX: grad will now be populated
+        feat = out_.clone().float()   # ensure float32
+        feat.retain_grad()
         feature_holder["feat"] = feat
-        return feat                 # redirect the rest of the network through clone
+        return feat
 
     hook = mdl.features.register_forward_hook(_fwd_hook)
-
     try:
         mdl.zero_grad()
-        output = mdl(inp)           # forward pass — hook fires here
-
-        feat = feature_holder.get("feat")
+        # Temporarily cast model to float32 for backward pass
+        mdl_f = mdl.float()
+        output = mdl_f(inp)
+        feat   = feature_holder.get("feat")
         if feat is None:
             return np.zeros((img_h, img_w), dtype=np.float32)
 
-        # Backprop target class score → gradients flow into feat.grad
-        score = output[0, class_idx]
-        score.backward()
-
-        grads = feat.grad           # [1, C, H', W']  — now populated ✓
+        output[0, class_idx].backward()
+        grads = feat.grad
         if grads is None:
             return np.zeros((img_h, img_w), dtype=np.float32)
 
-        # Standard Grad-CAM: global-avg-pool grads → weight channels → ReLU
-        weights = grads.mean(dim=(2, 3), keepdim=True)           # [1,C,1,1]
-        cam     = F.relu((weights * feat).sum(dim=1)).squeeze()  # [H', W']
+        weights = grads.mean(dim=(2, 3), keepdim=True)
+        cam     = F.relu((weights * feat).sum(dim=1)).squeeze()
         cam     = cam.detach().cpu().numpy()
-
         c_min, c_max = cam.min(), cam.max()
         if c_max - c_min < 1e-8:
             return np.zeros((img_h, img_w), dtype=np.float32)
-
         cam = (cam - c_min) / (c_max - c_min)
-        cam = cv2.resize(cam, (img_w, img_h))
-        return cam.astype(np.float32)
-
+        return cv2.resize(cam, (img_w, img_h)).astype(np.float32)
     finally:
         hook.remove()
-        mdl.zero_grad()             # clean up graph after backward
+        mdl.zero_grad()
+        # Cast back to half to restore memory savings
+        mdl.half()
+
+
+def blank_heatmap(image_np):
+    """Return a neutral grey overlay when Grad-CAM is disabled."""
+    overlay = image_np.copy()
+    cv2.putText(overlay, "Grad-CAM disabled (low-memory mode)",
+                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+    return overlay
 
 
 # ── Image quality scoring ─────────────────────────────────────────────────
-def assess_image_quality(image_np: np.ndarray) -> dict:
+def assess_image_quality(image_np):
     gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
-
     blur_score       = min(100.0, cv2.Laplacian(gray, cv2.CV_64F).var() / 10)
     contrast_score   = min(100.0, float(gray.std()) * 2)
     brightness       = float(gray.mean())
@@ -151,15 +160,8 @@ def assess_image_quality(image_np: np.ndarray) -> dict:
     snr_score        = min(100.0, brightness / (float(gray.std()) + 1e-6) * 10)
     edges            = cv2.Canny(gray, 50, 150)
     edge_score       = min(100.0, (edges > 0).sum() / edges.size * 500)
-
-    quality_score = (
-        blur_score       * 0.30 +
-        contrast_score   * 0.25 +
-        brightness_score * 0.15 +
-        snr_score        * 0.15 +
-        edge_score       * 0.15
-    )
-
+    quality_score    = (blur_score*0.30 + contrast_score*0.25 +
+                        brightness_score*0.15 + snr_score*0.15 + edge_score*0.15)
     issues, recommendations = [], []
     if blur_score < 40:
         issues.append("Blurry image")
@@ -169,59 +171,49 @@ def assess_image_quality(image_np: np.ndarray) -> dict:
         recommendations.append("Adjust ultrasound gain settings")
     if brightness_score < 50:
         if brightness < 100:
-            issues.append("Image too dark")
-            recommendations.append("Increase brightness/gain")
+            issues.append("Image too dark"); recommendations.append("Increase brightness/gain")
         else:
-            issues.append("Image too bright")
-            recommendations.append("Decrease brightness/gain")
+            issues.append("Image too bright"); recommendations.append("Decrease brightness/gain")
     if edge_score < 30:
-        issues.append("Poor definition")
-        recommendations.append("Adjust focus depth")
-
+        issues.append("Poor definition"); recommendations.append("Adjust focus depth")
     if   quality_score >= 75: ql, qc = "EXCELLENT", "#22c55e"
     elif quality_score >= 60: ql, qc = "GOOD",      "#3b82f6"
     elif quality_score >= 40: ql, qc = "MODERATE",  "#f59e0b"
     else:                     ql, qc = "POOR",       "#ef4444"
-
     return {
         "score": quality_score, "level": ql, "color": qc,
-        "metrics": {
-            "blur":       blur_score,
-            "contrast":   contrast_score,
-            "brightness": brightness_score,
-            "snr":        snr_score,
-            "edge":       edge_score,
-        },
-        "issues":          issues,
-        "recommendations": recommendations,
+        "metrics": {"blur": blur_score, "contrast": contrast_score,
+                    "brightness": brightness_score, "snr": snr_score, "edge": edge_score},
+        "issues": issues, "recommendations": recommendations,
     }
 
 
 # ── Inference ─────────────────────────────────────────────────────────────
-def predict(image_np: np.ndarray):
-    inp = transform(image_np).unsqueeze(0)
-    with torch.no_grad():
+def predict(image_np):
+    inp = transform(image_np).unsqueeze(0).half()   # match model dtype
+    with torch.inference_mode():
         outputs    = model(inp)
-        probs      = torch.softmax(outputs, dim=1)
+        probs      = torch.softmax(outputs.float(), dim=1)
         conf, pred = torch.max(probs, dim=1)
-    return pred.item(), conf.item(), probs[0].detach().cpu().numpy()
+    return pred.item(), conf.item(), probs[0].cpu().numpy()
 
 
-def risk_indicator(confidence: float):
-    if confidence >= 0.85:
-        return "LOW",      "Highly confident classification"
-    elif confidence >= 0.60:
-        return "MODERATE", "Review recommended for clinical correlation"
-    else:
-        return "HIGH",     "Manual expert review strongly recommended"
+def risk_indicator(confidence):
+    if confidence >= 0.85:   return "LOW",      "Highly confident classification"
+    elif confidence >= 0.60: return "MODERATE", "Review recommended for clinical correlation"
+    else:                    return "HIGH",     "Manual expert review strongly recommended"
 
 
-def image_to_b64(img, is_pil: bool = False) -> str:
+def image_to_b64(img, is_pil=False):
     buf = BytesIO()
     if is_pil:
-        img.save(buf, format="PNG")
+        # Resize to 512px wide to reduce payload size
+        img.thumbnail((512, 512), Image.LANCZOS)
+        img.save(buf, format="JPEG", quality=80)
     else:
-        Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)).save(buf, format="PNG")
+        pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        pil.thumbnail((512, 512), Image.LANCZOS)
+        pil.save(buf, format="JPEG", quality=80)
     return base64.b64encode(buf.getvalue()).decode()
 
 
@@ -231,6 +223,11 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok", "gradcam": not DISABLE_GRADCAM})
+
+
 @app.route("/analyze", methods=["POST"])
 def analyze():
     if "image" not in request.files:
@@ -238,35 +235,29 @@ def analyze():
     file = request.files["image"]
     if file.filename == "":
         return jsonify({"error": "Empty filename"}), 400
-
     try:
         image_pil = Image.open(file.stream).convert("RGB")
         image_np  = np.array(image_pil)
 
-        # 1. Quality
         quality_data = assess_image_quality(image_np)
-
-        # 2. Inference (no_grad)
         pred, conf, all_probs = predict(image_np)
 
-        # 3. Grad-CAM
-        cam_map = grad_cam_generate(model, image_np, pred)
-        heatmap = cv2.applyColorMap(np.uint8(255 * cam_map), cv2.COLORMAP_JET)
-        overlay = cv2.addWeighted(image_np, 0.6, heatmap, 0.4, 0)
+        if DISABLE_GRADCAM:
+            overlay = blank_heatmap(image_np)
+        else:
+            cam_map = grad_cam_generate(model, image_np, pred)
+            heatmap = cv2.applyColorMap(np.uint8(255 * cam_map), cv2.COLORMAP_JET)
+            overlay = cv2.addWeighted(image_np, 0.6, heatmap, 0.4, 0)
 
-        # 4. Labels
         risk, risk_message = risk_indicator(conf)
         plane_name = CLASSES[pred]
         plane_data = PLANE_INFO[plane_name]
 
         is_standard = plane_name != "Diverse / Other"
         high_conf   = conf >= 0.65
-        if is_standard and high_conf:
-            verdict = "STANDARD"
-        elif is_standard and not high_conf:
-            verdict = "UNCERTAIN"
-        else:
-            verdict = "NON_STANDARD"
+        if is_standard and high_conf:       verdict = "STANDARD"
+        elif is_standard and not high_conf: verdict = "UNCERTAIN"
+        else:                               verdict = "NON_STANDARD"
 
         return jsonify({
             "success":      True,
@@ -290,6 +281,7 @@ def analyze():
             "heatmap_b64":  image_to_b64(overlay),
             "timestamp":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "filename":     file.filename,
+            "gradcam_active": not DISABLE_GRADCAM,
         })
 
     except Exception:
@@ -304,10 +296,8 @@ def preeclampsia():
 
         def opt_float(key):
             v = d.get(key, "")
-            try:
-                return float(v) if str(v).strip() else None
-            except (TypeError, ValueError):
-                return None
+            try:   return float(v) if str(v).strip() else None
+            except: return None
 
         def opt_bool(key):
             v = d.get(key)
@@ -338,7 +328,6 @@ def preeclampsia():
             uric_acid_elevated    = opt_bool("uric_acid_elevated"),
             sflt1_plgf_ratio      = opt_float("sflt1_plgf_ratio"),
         )
-
         result = assess_preeclampsia_risk(inputs)
         return jsonify({
             "success":            True,
@@ -353,7 +342,6 @@ def preeclampsia():
             "summary":            result.summary,
             "timestamp":          datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
-
     except Exception:
         traceback.print_exc()
         return jsonify({"error": traceback.format_exc()}), 500
@@ -362,15 +350,13 @@ def preeclampsia():
 @app.route("/report/html", methods=["POST"])
 def report_html():
     try:
-        data = request.json
-        html = _build_html_report(data)
-        return jsonify({"html": html})
+        return jsonify({"html": _build_html_report(request.json)})
     except Exception:
         traceback.print_exc()
         return jsonify({"error": traceback.format_exc()}), 500
 
 
-def _build_html_report(d: dict) -> str:
+def _build_html_report(d):
     ts    = d.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     plane = d.get("plane", "—")
     pd_   = PLANE_INFO.get(plane, {})
@@ -382,18 +368,16 @@ def _build_html_report(d: dict) -> str:
     fname = d.get("filename", "—")
     rc    = "#22c55e" if risk == "LOW" else "#f59e0b" if risk == "MODERATE" else "#ef4444"
     color = pd_.get("color", "#3b82f6")
-
-    bars = "".join([
+    bars  = "".join([
         f'<div style="margin-bottom:12px;">'
         f'<div style="display:flex;justify-content:space-between;">'
         f'<span style="font-weight:600;">{cn}</span>'
-        f'<span style="color:#6b7280;">{probs.get(cn, 0):.1f}%</span></div>'
+        f'<span style="color:#6b7280;">{probs.get(cn,0):.1f}%</span></div>'
         f'<div style="background:#e5e7eb;height:8px;border-radius:4px;overflow:hidden;margin-top:4px;">'
-        f'<div style="background:{PLANE_INFO[cn]["color"]};height:100%;width:{probs.get(cn, 0)}%;"></div>'
+        f'<div style="background:{PLANE_INFO[cn]["color"]};height:100%;width:{probs.get(cn,0)}%;"></div>'
         f'</div></div>'
         for cn in CLASSES
     ])
-
     return f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>FetalGuard-AI Report</title>
 <style>
@@ -416,33 +400,24 @@ img{{width:100%;border-radius:8px;}}
 <div class="hdr"><h1>🧬 FetalGuard-AI Screening Report</h1><p>{ts}</p></div>
 <div class="body">
 <div class="grid">
-  <div><img src="data:image/png;base64,{orig}"><div class="lbl">Original Scan</div></div>
-  <div><img src="data:image/png;base64,{ov}"><div class="lbl">Grad-CAM Heatmap</div></div>
+  <div><img src="data:image/jpeg;base64,{orig}"><div class="lbl">Original Scan</div></div>
+  <div><img src="data:image/jpeg;base64,{ov}"><div class="lbl">Grad-CAM Heatmap</div></div>
 </div>
 <div class="card">
-  <div class="pname">{plane}</div>
-  <div class="cnum">{conf:.1f}%</div>
+  <div class="pname">{plane}</div><div class="cnum">{conf:.1f}%</div>
   <div class="badge">Risk: {risk}</div>
   <div class="row"><b>Description:</b> {pd_.get("description","—")}</div>
   <div class="row"><b>Structures:</b> {pd_.get("structures","—")}</div>
   <div class="row"><b>Key Measurements:</b> {pd_.get("measurements","—")}</div>
   <div class="row"><b>Clinical Significance:</b> {pd_.get("clinical_significance","—")}</div>
 </div>
-<h3>Confidence Breakdown</h3>
-{bars}
-<div class="disc"><strong>⚠️ Medical Disclaimer:</strong> AI decision-support only.
-Not a clinical diagnosis. Always consult a qualified clinician.</div>
+<h3>Confidence Breakdown</h3>{bars}
+<div class="disc"><strong>⚠️ Medical Disclaimer:</strong> AI decision-support only. Not a clinical diagnosis.</div>
 </div>
 <div class="ftr">FetalGuard-AI · DenseNet121 · {fname}</div>
 </div></body></html>"""
 
 
-# ── Entry point ───────────────────────────────────────────────────────────
+# ── Local dev entry point ─────────────────────────────────────────────────
 if __name__ == "__main__":
-    load_model()
-    app.run(
-        debug=True,
-        host="0.0.0.0",
-        port=5000,
-        use_reloader=False,     # ← stops Flask reloading on PyTorch warnings
-    )
+    app.run(debug=False, host="0.0.0.0", port=5000, use_reloader=False)

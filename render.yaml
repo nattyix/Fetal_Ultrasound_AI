@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: fetalgaurd-ai
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --threads 2 --timeout 120 --preload --bind 0.0.0.0:$PORT
+    envVars:
+      - key: DISABLE_GRADCAM
+        value: "1"
+      - key: PYTHON_VERSION
+        value: "3.11.0"

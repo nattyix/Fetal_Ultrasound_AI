@@ -178,7 +178,10 @@ def predict(image_np):
         outputs    = model(inp)
         probs      = torch.softmax(outputs, dim=1)
         conf, pred = torch.max(probs, dim=1)
-    return pred.item(), conf.item(), probs[0].cpu().numpy()
+    result = pred.item(), conf.item(), probs[0].cpu().numpy()
+    gc.collect() 
+    return result
+
 
 
 def risk_indicator(confidence):

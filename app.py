@@ -68,7 +68,11 @@ def score_cam(mdl, image_np, class_idx, max_channels=32):
     max_channels: subset of feature channels to use (lower = faster/less RAM)
     """
     img_h, img_w = image_np.shape[:2]
+    # Always ensure inp is exactly 224x224 regardless of original image size
     inp = transform(image_np).unsqueeze(0)   # [1,3,224,224]
+    if hasattr(inp, "as_tensor"):
+        inp = inp.as_tensor()
+    inp = F.interpolate(inp.float(), size=IMAGE_SIZE, mode="bilinear", align_corners=False)
 
     # Step 1: get feature maps via forward hook (no grad needed)
     feat_holder = {}
@@ -102,8 +106,9 @@ def score_cam(mdl, image_np, class_idx, max_channels=32):
         ch_up = cv2.resize(ch_norm, (img_w, img_h)) # [224,224]
         # Mask the input
         mask = torch.tensor(ch_up, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
-        # Convert to plain tensor to avoid MONAI MetaTensor incompatibility
+        # Convert to plain tensor, force 224x224 to match mask dimensions
         inp_plain  = inp.as_tensor() if hasattr(inp, "as_tensor") else torch.as_tensor(inp)
+        inp_plain  = F.interpolate(inp_plain.float(), size=IMAGE_SIZE, mode="bilinear", align_corners=False)
         masked_inp = inp_plain * mask
         with torch.inference_mode():
             out   = mdl(masked_inp)

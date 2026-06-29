@@ -62,64 +62,46 @@ print("[FetalGuard] Ready.", flush=True)
 # Memory cost = 1 forward pass per channel subset → constant, low RAM
 # Works perfectly with MONAI's in-place ops since no .backward() is called
 def score_cam(mdl, image_np, class_idx, max_channels=32):
-    """
-    Gradient-free Score-CAM.
-    Uses forward passes only — safe for MONAI, no OOM from backward graph.
-    max_channels: subset of feature channels to use (lower = faster/less RAM)
-    """
+    """Gradient-free Score-CAM — forward passes only, no backprop, no OOM."""
     img_h, img_w = image_np.shape[:2]
-    # Always ensure inp is exactly 224x224 regardless of original image size
-    inp = transform(image_np).unsqueeze(0)   # [1,3,224,224]
-    if hasattr(inp, "as_tensor"):
-        inp = inp.as_tensor()
-    inp = F.interpolate(inp.float(), size=IMAGE_SIZE, mode="bilinear", align_corners=False)
 
-    # Step 1: get feature maps via forward hook (no grad needed)
+    # inp: plain float32 tensor, always exactly [1, 3, 224, 224]
+    raw = transform(image_np).unsqueeze(0)
+    raw = raw.as_tensor() if hasattr(raw, "as_tensor") else torch.as_tensor(raw)
+    inp = F.interpolate(raw.float(), size=(224, 224), mode="bilinear", align_corners=False)
+
+    # Step 1: extract feature maps with a forward hook
     feat_holder = {}
     def _hook(m, i, o):
         feat_holder["feat"] = o.detach().cpu()
     hook = mdl.features.register_forward_hook(_hook)
-
     with torch.inference_mode():
-        base_out = mdl(inp)                          # [1,4]
+        base_out   = mdl(inp)
         base_score = torch.softmax(base_out, dim=1)[0, class_idx].item()
     hook.remove()
 
-    feat = feat_holder["feat"]                       # [1, C, h, w]
-    C = feat.shape[1]
+    feat    = feat_holder["feat"]                        # [1, C, h, w]
+    top_idx = feat[0].abs().mean(dim=(1,2)).argsort(descending=True)[:max_channels]
 
-    # Step 2: pick top-K channels by activation magnitude (saves time+RAM)
-    channel_scores = feat[0].abs().mean(dim=(1, 2)) # [C]
-    top_idx = channel_scores.argsort(descending=True)[:max_channels]
-
-    # Step 3: for each selected channel, mask input and forward pass
-    cam = np.zeros((img_h, img_w), dtype=np.float32)
-
+    # Step 3: mask-and-score — everything at 224x224
+    cam = np.zeros((224, 224), dtype=np.float32)
     for idx in top_idx:
-        ch_map = feat[0, idx].numpy()               # [h, w]
-        # Normalise channel map to [0,1]
+        ch_map = feat[0, idx].numpy()
         mn, mx = ch_map.min(), ch_map.max()
         if mx - mn < 1e-8:
             continue
         ch_norm = (ch_map - mn) / (mx - mn)
-        # Upsample to input size
-        ch_up = cv2.resize(ch_norm, (img_w, img_h)) # [224,224]
-        # Mask the input
-        mask = torch.tensor(ch_up, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
-        # Convert to plain tensor, force 224x224 to match mask dimensions
-        inp_plain  = inp.as_tensor() if hasattr(inp, "as_tensor") else torch.as_tensor(inp)
-        inp_plain  = F.interpolate(inp_plain.float(), size=IMAGE_SIZE, mode="bilinear", align_corners=False)
-        masked_inp = inp_plain * mask
+        ch_up   = cv2.resize(ch_norm, (224, 224))        # always 224x224
+        mask    = torch.tensor(ch_up, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        masked  = inp * mask                              # [1,3,224,224]*[1,1,224,224] ✓
         with torch.inference_mode():
-            out   = mdl(masked_inp)
+            out   = mdl(masked)
             score = torch.softmax(out, dim=1)[0, class_idx].item()
-        # Weight this channel's map by how much it helps the target class
-        weight = max(score - base_score, 0)
-        cam   += weight * ch_up
-        del masked_inp, out, mask
-        gc.collect()
+        cam += max(score - base_score, 0) * ch_up
+        del masked, out, mask; gc.collect()
 
-    # Normalise final CAM
+    # Resize back to original image dims and normalise
+    cam = cv2.resize(cam, (img_w, img_h))
     mn, mx = cam.min(), cam.max()
     if mx - mn < 1e-8:
         return np.zeros((img_h, img_w), dtype=np.float32)

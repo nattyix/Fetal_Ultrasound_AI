@@ -102,7 +102,9 @@ def score_cam(mdl, image_np, class_idx, max_channels=32):
         ch_up = cv2.resize(ch_norm, (img_w, img_h)) # [224,224]
         # Mask the input
         mask = torch.tensor(ch_up, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
-        masked_inp = inp * mask
+        # Convert to plain tensor to avoid MONAI MetaTensor incompatibility
+        inp_plain  = inp.as_tensor() if hasattr(inp, "as_tensor") else torch.as_tensor(inp)
+        masked_inp = inp_plain * mask
         with torch.inference_mode():
             out   = mdl(masked_inp)
             score = torch.softmax(out, dim=1)[0, class_idx].item()

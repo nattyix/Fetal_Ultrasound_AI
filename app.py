@@ -190,7 +190,7 @@ def analyze():
 
         # Score-CAM — forward passes only, no backprop, no OOM
         cam_map     = score_cam(model, image_np, pred, max_channels=32)
-        heatmap_bgr = cv2.applyColorMap(np.uint8(255 * cam_map), cv2.COLORMAP_JET)
+        heatmap_bgr = cv2.applyColorMap(np.uint8(255 * cam_map), cv2.COLORMAP_TURBO)
         overlay_bgr = cv2.addWeighted(image_np, 0.6, heatmap_bgr, 0.4, 0)
         overlay_rgb = cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB)
         del cam_map, heatmap_bgr, overlay_bgr; gc.collect()

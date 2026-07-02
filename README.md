@@ -2,25 +2,19 @@
 
 # 🧬 FetalGuard-AI
 
-### AI-Powered Fetal Ultrasound Plane Classification & Preeclampsia Risk Screening
-
-<p>
-An intelligent clinical decision-support system that combines <b>DenseNet121</b>, <b>Explainable AI</b>, and a rule-based maternal risk assessment model to assist fetal ultrasound analysis.
-</p>
+### AI-Powered Fetal Ultrasound Plane Classification & Preeclampsia Risk Assessment
 
 <p>
 
 ![Python](https://img.shields.io/badge/Python-3.11-blue?style=for-the-badge&logo=python)
-![PyTorch](https://img.shields.io/badge/PyTorch-Deep%20Learning-EE4C2C?style=for-the-badge&logo=pytorch)
+![PyTorch](https://img.shields.io/badge/PyTorch-Deep%20Learning-red?style=for-the-badge&logo=pytorch)
+![MONAI](https://img.shields.io/badge/MONAI-Medical%20AI-green?style=for-the-badge)
 ![Flask](https://img.shields.io/badge/Flask-Web%20App-black?style=for-the-badge&logo=flask)
-![DenseNet121](https://img.shields.io/badge/DenseNet121-Transfer%20Learning-success?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-Educational-orange?style=for-the-badge)
 
 </p>
 
-<img src="assets/banner.png" width="900">
-
-> Replace the banner above with your project banner or dashboard screenshot.
+An intelligent clinical decision support system that combines fetal ultrasound image analysis, image quality assessment, explainable AI, and preeclampsia risk screening.
 
 </div>
 
@@ -28,45 +22,45 @@ An intelligent clinical decision-support system that combines <b>DenseNet121</b>
 
 # 📑 Table of Contents
 
-- 🌍 Overview
-- ✨ Features
-- 🧠 AI Pipeline
-- 🏗️ Architecture
-- 📸 Demo
-- 📂 Project Structure
-- 🧬 Deep Learning Model
-- 📊 Dataset
-- 📈 Model Performance
-- ⚙️ Tech Stack
-- 🖼️ Screenshots
-- 🚀 Installation
-- 💻 Usage
-- 🔮 Future Improvements
-- 🤝 Contributing
-- 📜 Disclaimer
+- Overview
+- Key Features
+- AI Pipeline
+- System Architecture
+- Project Structure
+- Deep Learning Model
+- Clinical Risk Assessment
+- Explainable AI
+- Dataset
+- Tech Stack
+- Performance
+- Installation
+- Usage
+- Future Improvements
+- Contributing
+- Disclaimer
+- Authors
 
 ---
 
 # 🌍 Overview
 
-**FetalGuard-AI** is a deep learning-powered clinical decision-support application that automatically classifies fetal brain ultrasound images into standard anatomical planes while providing **Score-CAM visual explanations** and **maternal preeclampsia risk screening**.
+**FetalGuard-AI** is an AI-assisted prenatal healthcare application designed to classify fetal ultrasound planes and provide an early screening score for **preeclampsia risk**.
 
-The platform combines computer vision, transfer learning, image quality assessment, and clinical rule-based analysis into a single lightweight web application for educational and research use.
+The application combines a **DenseNet121** deep learning model with clinical indicators, image quality assessment, and explainable AI to support faster and more transparent prenatal screening.
 
 ---
 
 # ✨ Key Features
 
-| 🚀 Feature | Description |
-|------------|-------------|
-| 🧠 DenseNet121 | Transfer learning for fetal ultrasound classification |
-| 🔥 Score-CAM | Explainable AI visualization |
-| 👶 Plane Classification | Trans-thalamic, Trans-ventricular, Trans-cerebellum & Diverse |
-| ❤️ Preeclampsia Screening | Maternal clinical risk assessment |
-| 📷 Image Quality Analysis | Blur, brightness, contrast & SNR evaluation |
-| 📊 Confidence Scores | Probability-based prediction confidence |
-| 📄 PDF Report | Downloadable clinical report |
-| 🌐 Flask Web App | Interactive browser interface |
+| Feature | Description |
+|--------|-------------|
+| 🧠 Ultrasound Plane Classification | Detects fetal brain ultrasound plane |
+| ❤️ Preeclampsia Risk Screening | Clinical scoring engine |
+| 📊 Image Quality Assessment | Evaluates uploaded scan quality |
+| 🔥 Explainable AI | Score-CAM visualization |
+| 📋 Clinical Report | Generates structured screening report |
+| 🌐 Flask Dashboard | Interactive web application |
+| ⚡ Real-Time Inference | Fast prediction pipeline |
 
 ---
 
@@ -76,60 +70,55 @@ The platform combines computer vision, transfer learning, image quality assessme
 Ultrasound Image
         │
         ▼
-Image Quality Assessment
+Image Preprocessing
         │
         ▼
-DenseNet121
+DenseNet121 (MONAI)
         │
         ▼
 Plane Classification
         │
- ┌──────┼──────────────┐
- ▼      ▼              ▼
-Score-CAM      Confidence     Risk Flag
-        │
-        ▼
-Clinical Report Generation
+        ├──────────────┐
+        ▼              ▼
+Image Quality    Clinical Inputs
+        │              │
+        └──────┬───────┘
+               ▼
+Preeclampsia Risk Engine
+               │
+               ▼
+Clinical Report + Score-CAM
 ```
 
 ---
 
-# 🏗️ Project Architecture
+# 🏗️ System Architecture
 
 ```text
 User Upload
-      │
-      ▼
-Ultrasound Image
-      │
-      ▼
+     │
+     ▼
+Ultrasound Scan
+     │
+     ▼
 Preprocessing
-      │
-      ▼
+     │
+     ▼
 DenseNet121
-      │
-      ▼
+     │
+     ▼
 Prediction
-      │
- ┌────┴──────────────┐
- ▼                   ▼
-Score-CAM      Confidence Score
-      │
-      ▼
-Preeclampsia Assessment
+     │
+ ┌───┴────────────┐
+ ▼                ▼
+Quality      Score-CAM
+Assessment
       │
       ▼
-Diagnostic Report
-```
-
----
-
-# 📸 Demo
-
-> Add GIF or deployed application screenshot here.
-
-```md
-<img src="assets/demo.gif" width="900">
+Clinical Risk Analysis
+      │
+      ▼
+Final Diagnostic Report
 ```
 
 ---
@@ -137,21 +126,16 @@ Diagnostic Report
 # 📂 Project Structure
 
 ```text
-FetalGuard-AI
+FetalGuard-AI/
 │
 ├── app.py
 ├── models/
-│   ├── fetal_ultrasound_model.pth
-│   ├── fold_1_best.pth
-│   └── ...
-├── scripts/
-│   ├── train.py
-│   ├── predict.py
-│   └── preeclampsia_risk.py
-├── static/
 ├── templates/
+├── static/
+├── utils/
 ├── requirements.txt
-└── README.md
+├── README.md
+└── trained_model.pth
 ```
 
 ---
@@ -159,39 +143,43 @@ FetalGuard-AI
 # 🧬 Deep Learning Model
 
 | Component | Details |
-|-----------|---------|
+|----------|---------|
 | Backbone | DenseNet121 |
-| Framework | PyTorch |
+| Framework | PyTorch + MONAI |
+| Task | Multi-class Ultrasound Plane Classification |
 | Explainability | Score-CAM |
-| Classes | 4 |
 | Deployment | Flask |
+
+---
+
+# ❤️ Clinical Risk Assessment
+
+The application combines image predictions with maternal clinical indicators to estimate preeclampsia risk.
+
+Clinical indicators include:
+
+- Blood Pressure
+- Maternal Age
+- BMI
+- Medical History
+- Proteinuria
+- Additional prenatal factors
+
+The final score is presented as a structured clinical screening report.
+
+---
+
+# 🔥 Explainable AI
+
+To improve transparency, **Score-CAM** highlights image regions influencing the model's prediction, helping users understand the reasoning behind each classification.
 
 ---
 
 # 📊 Dataset
 
-| Dataset | Purpose |
-|---------|---------|
-| Fetal Brain Ultrasound Images | Plane Classification |
-| Maternal Clinical Parameters | Preeclampsia Risk Screening |
+The model is trained on fetal ultrasound images representing multiple standard fetal brain planes.
 
-**Classes**
-
-- Trans-thalamic
-- Trans-ventricular
-- Trans-cerebellum
-- Diverse
-
----
-
-# 📈 Model Performance
-
-| Metric | Value |
-|---------|------:|
-| Accuracy | 97%+ |
-| Backbone | DenseNet121 |
-| Explainability | Score-CAM |
-| Deployment | Flask |
+The project includes preprocessing, augmentation, and validation strategies to improve robustness across varying image quality.
 
 ---
 
@@ -200,33 +188,30 @@ FetalGuard-AI
 | Category | Technologies |
 |----------|--------------|
 | Language | Python |
-| Deep Learning | PyTorch |
+| Deep Learning | PyTorch, MONAI |
+| Backend | Flask |
 | Computer Vision | OpenCV, Pillow |
 | Explainability | Score-CAM |
-| Backend | Flask |
-| Frontend | HTML, CSS, JavaScript |
+| Data Science | NumPy, Pandas |
 
 ---
 
-# 🖼️ Screenshots
+# 📈 Performance
 
-| Dashboard | Prediction |
-|-----------|------------|
-| ![](assets/home.png) | ![](assets/prediction.png) |
-
-| Score-CAM | PDF Report |
-|-----------|------------|
-| ![](assets/scorecam.png) | ![](assets/report.png) |
-
-> Replace placeholders with actual screenshots from your application.
+| Metric | Result |
+|--------|-------:|
+| Backbone | DenseNet121 |
+| Explainability | Score-CAM |
+| Deployment | Flask |
+| Inference | Real-Time |
 
 ---
 
 # 🚀 Installation
 
 ```bash
-git clone https://github.com/yourusername/FetalGuard-AI.git
-cd FetalGuard-AI
+git clone https://github.com/nattyix/Fetal_Ultrasound_AI.git
+cd Fetal_Ultrasound_AI
 pip install -r requirements.txt
 python app.py
 ```
@@ -235,46 +220,61 @@ python app.py
 
 # 💻 Usage
 
-1. Upload a fetal ultrasound image.
-2. Review image quality metrics.
-3. View predicted anatomical plane.
-4. Inspect Score-CAM heatmap.
-5. Enter maternal clinical parameters.
-6. Generate preeclampsia risk assessment.
-7. Download the clinical report.
+1. Launch the Flask application.
+2. Upload a fetal ultrasound image.
+3. Enter clinical information.
+4. Review the predicted ultrasound plane.
+5. Analyze image quality.
+6. View Score-CAM visualization.
+7. Generate the preeclampsia screening report.
 
 ---
 
 # 🔮 Future Improvements
 
-- Vision Transformers (ViT)
-- DICOM Support
-- Multi-fetal Analysis
-- Cloud Deployment
+- Vision Transformer models
+- Multi-organ fetal assessment
+- DICOM integration
+- Cloud deployment
 - REST API
-- 3D Ultrasound Support
-- Mobile Application
+- Electronic Health Record integration
+- Mobile application
 
 ---
 
 # 🤝 Contributing
 
-Contributions are welcome! Fork the repository, create a feature branch, commit your changes, and submit a Pull Request.
+Contributions are welcome.
+
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push your branch
+5. Open a Pull Request
 
 ---
 
 # 📜 Medical Disclaimer
 
-This project is intended for **educational and research purposes only**.
+This project is intended for **research, educational, and demonstration purposes only**.
 
-It is **not a certified medical diagnostic system** and should always be used alongside professional clinical evaluation.
+It is **not** a certified medical device and should not replace professional clinical diagnosis or decision-making.
+
+---
+
+# 👨‍💻 Authors
+
+**FetalGuard-AI Team**
+
+- **Limnisha Changkakati**
+- **Natalia Mathews**
 
 ---
 
 <div align="center">
 
-## ⭐ Star this repository if you found it useful!
+### ⭐ If you found this project helpful, please consider giving it a star!
 
-Made with ❤️ using PyTorch, Flask & Explainable AI.
+Built with ❤️ using PyTorch, MONAI and Flask.
 
 </div>

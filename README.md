@@ -1,165 +1,320 @@
-FetalGuard-AI 🧬
+# 🧬 FetalGuard-AI
 
-AI-powered fetal ultrasound plane classification and preeclampsia risk screening, deployed as a lightweight Flask web app.
+> **AI-powered fetal ultrasound plane classification and preeclampsia risk screening using Deep Learning and Explainable AI.**
 
-FetalGuard-AI takes a fetal brain ultrasound image, classifies it into one of four standard imaging planes using a DenseNet121 model, and overlays a Score-CAM heatmap to visualize which regions drove the prediction — all optimized to run within Render's free-tier 512MB memory limit. It also includes a rule-based preeclampsia risk assessment tool based on maternal clinical inputs.
+FetalGuard-AI is an intelligent clinical decision-support system that classifies fetal brain ultrasound images into standard anatomical planes using a **DenseNet121** deep learning model while providing **Score-CAM explainability** to visualize the regions influencing the prediction. The system also integrates a **rule-based preeclampsia risk assessment module** based on maternal clinical parameters and generates downloadable diagnostic reports.
 
+> **⚠️ Medical Disclaimer**
+>
+> This project is intended for **educational and clinical decision-support purposes only**. It is **not** a replacement for professional medical diagnosis or treatment. All predictions should be interpreted by qualified healthcare professionals.
 
-⚠️ Medical Disclaimer: This tool is intended for decision-support and educational purposes only. It is not a substitute for professional medical diagnosis. All outputs should be reviewed by a qualified clinician.
+---
 
+# ✨ Features
 
+### 🧠 AI-Based Fetal Ultrasound Classification
+Classifies fetal brain ultrasound images into four standard anatomical planes:
 
+- Trans-thalamic
+- Trans-ventricular
+- Trans-cerebellum
+- Diverse / Other
 
-Features
+---
 
+### 🔥 Explainable AI with Score-CAM
 
-Fetal plane classification — Classifies ultrasound images into:
+Unlike Grad-CAM, Score-CAM performs only forward passes, eliminating expensive gradient computation.
 
-Trans-thalamic
-Trans-ventricular
-Trans-cerebellum
-Diverse / Other
+Benefits:
 
+- Memory efficient
+- No backpropagation required
+- Ideal for low-memory cloud deployments
+- Visualizes regions influencing model predictions
 
+---
 
-Score-CAM visual explanations — A gradient-free, forward-pass-only variant of Class Activation Mapping that highlights the regions the model focused on, without the memory overhead of backpropagation-based methods (e.g. Grad-CAM). This keeps the app runnable on constrained/free hosting tiers.
-Automated image quality assessment — Scores uploaded scans on blur, contrast, brightness, signal-to-noise, and edge definition, and surfaces actionable recommendations (e.g. "adjust ultrasound gain settings").
-Confidence-based risk flagging — Classifies each prediction as LOW / MODERATE / HIGH confidence risk and recommends manual review when appropriate.
-Preeclampsia risk assessment — A separate rule-based module (scripts/preeclampsia_risk.py) that scores maternal risk from blood pressure, proteinuria, symptoms, and clinical history/labs, and returns a risk classification, triggered criteria, and a monitoring plan.
-Downloadable HTML report — Generates a shareable, styled HTML report combining the original scan, the Score-CAM overlay, classification results, and confidence breakdown.
+### 📷 Automated Image Quality Assessment
 
+Evaluates uploaded ultrasound images using multiple quality metrics:
 
+- Blur Detection
+- Brightness
+- Contrast
+- Signal-to-Noise Ratio
+- Edge Definition
 
-Tech Stack
+The system also provides practical recommendations to improve scan quality.
 
-LayerToolsBackendFlask, GunicornModelPyTorch (CPU), MONAI (DenseNet121)Image processingOpenCV (headless), Pillow, NumPyFrontendHTML/CSS/JS (Flask templates + static assets)DeploymentRender (render.yaml, Procfile)
+---
 
+### 📊 Confidence-Based Risk Flagging
 
-Project Structure
+Each prediction is categorized into:
 
+- 🟢 LOW Risk
+- 🟡 MODERATE Risk
+- 🔴 HIGH Risk
+
+Low-confidence predictions are automatically flagged for manual clinical review.
+
+---
+
+### ❤️ Preeclampsia Risk Assessment
+
+A rule-based clinical scoring engine evaluates maternal risk using:
+
+- Blood Pressure
+- Proteinuria
+- Gestational Age
+- Symptoms
+- Laboratory Findings
+- Medical History
+
+The module returns:
+
+- Risk Score
+- Risk Category
+- Triggered Clinical Criteria
+- Recommended Monitoring Plan
+
+---
+
+### 📄 Downloadable Diagnostic Report
+
+Generates a professional HTML report containing:
+
+- Original Ultrasound Image
+- Score-CAM Visualization
+- Plane Prediction
+- Confidence Scores
+- Image Quality Metrics
+- Clinical Interpretation
+
+---
+
+# 🛠️ Tech Stack
+
+| Category | Technologies |
+|----------|--------------|
+| Backend | Flask, Gunicorn |
+| Deep Learning | PyTorch, MONAI (DenseNet121) |
+| Image Processing | OpenCV, Pillow, NumPy |
+| Frontend | HTML, CSS, JavaScript |
+| Deployment | Render |
+| Explainable AI | Score-CAM |
+
+---
+
+# 📁 Project Structure
+
+```text
 Fetal_Ultrasound_AI/
-├── app.py                     # Flask app: routes, inference, Score-CAM, HTML report builder
-├── quantize_model.py          # Model quantization utility (for smaller/faster inference)
-├── models/                    # Trained model weights (fetal_ultrasound_model.pth)
+│
+├── app.py
+├── quantize_model.py
+├── models/
+│   └── fetal_ultrasound_model.pth
+│
 ├── scripts/
-│   └── preeclampsia_risk.py   # Rule-based preeclampsia risk scoring logic
-├── templates/                 # Flask HTML templates (index.html, etc.)
-├── static/                    # CSS/JS/static assets
+│   └── preeclampsia_risk.py
+│
+├── templates/
+├── static/
+│
 ├── requirements.txt
-├── render.yaml                # Render deployment config
-├── Procfile                   # Process file for Render/Heroku-style deployment
+├── Procfile
+├── render.yaml
 └── .gitignore
+```
 
+---
 
-Getting Started
+# 🚀 Getting Started
 
-Prerequisites
+## Prerequisites
 
+- Python 3.10+
+- pip
 
-Python 3.10+
-pip
+---
 
+## Installation
 
-Installation
+```bash
+git clone https://github.com/nattyix/Fetal_Ultrasound_AI.git
 
-bashgit clone https://github.com/nattyix/Fetal_Ultrasound_AI.git
 cd Fetal_Ultrasound_AI
+
 pip install -r requirements.txt
+```
 
+Place the trained model inside:
 
-Note: requirements.txt pins CPU-only PyTorch (torch==2.1.0+cpu) via the PyTorch CPU wheel index, so no GPU/CUDA setup is required.
+```text
+models/
+└── fetal_ultrasound_model.pth
+```
 
+---
 
+## Run Locally
 
-Place your trained model weights at:
+```bash
+python app.py
+```
 
-models/fetal_ultrasound_model.pth
+Application starts at:
 
-Running locally
+```
+http://localhost:5000
+```
 
-bashpython app.py
+For production:
 
-The app will start on http://0.0.0.0:5000.
+```bash
+gunicorn app:app
+```
 
-For production-style serving:
+---
 
-bashgunicorn app:app
+# 🌐 API Endpoints
 
+| Method | Endpoint | Description |
+|---------|----------|-------------|
+| GET | `/` | Web Interface |
+| GET | `/health` | Health Check |
+| GET | `/image/<key>` | Retrieve stored image |
+| POST | `/analyze` | Analyze fetal ultrasound image |
+| POST | `/preeclampsia` | Clinical risk assessment |
+| POST | `/report/html` | Generate downloadable report |
 
-API Endpoints
+---
 
-MethodRouteDescriptionGET/Serves the main web UIGET/healthHealth check ({"status": "ok"})GET/image/<key>Serves a stored (original or overlay) image by keyPOST/analyzeUpload an ultrasound image (multipart/form-data, field image); returns plane classification, confidence, risk level, image quality metrics, and keys to the original + Score-CAM overlay imagesPOST/preeclampsiaSubmit maternal clinical data (JSON) for preeclampsia risk scoringPOST/report/htmlGenerates a downloadable/shareable HTML report from a prior /analyze result
+## Example: Analyze Ultrasound
 
-Example: /analyze
+```bash
+curl -X POST http://localhost:5000/analyze \
+-F "image=@scan.jpg"
+```
 
-bashcurl -X POST http://localhost:5000/analyze \
-  -F "image=@/path/to/scan.jpg"
+Example Response
 
-Response (abridged):
-
-json{
+```json
+{
   "success": true,
   "plane": "Trans-thalamic",
   "confidence": 92.4,
   "risk": "LOW",
-  "verdict": "STANDARD",
-  "quality": { "score": 81.2, "level": "EXCELLENT" },
-  "all_probs": { "Trans-thalamic": 92.4, "Trans-ventricular": 4.1, ... },
-  "orig_key": "…",
-  "overlay_key": "…"
+  "quality": {
+    "score": 81.2,
+    "level": "EXCELLENT"
+  }
 }
+```
 
-Example: /preeclampsia
+---
 
-bashcurl -X POST http://localhost:5000/preeclampsia \
-  -H "Content-Type: application/json" \
-  -d '{
-    "systolic_bp": 145,
-    "diastolic_bp": 95,
-    "gestational_age_weeks": 32,
-    "proteinuria": "moderate",
-    "severe_headache": true
-  }'
+## Example: Preeclampsia Assessment
 
-Returns a risk level, risk score, triggered clinical criteria, and a recommended monitoring plan.
+```bash
+curl -X POST http://localhost:5000/preeclampsia \
+-H "Content-Type: application/json" \
+-d '{
+  "systolic_bp":145,
+  "diastolic_bp":95,
+  "gestational_age_weeks":32,
+  "proteinuria":"moderate",
+  "severe_headache":true
+}'
+```
 
+Returns:
 
-How Score-CAM Works Here
+- Risk Score
+- Risk Category
+- Triggered Criteria
+- Monitoring Recommendation
 
-Standard Grad-CAM requires a backward pass to compute gradients, which spikes memory usage — a problem on free-tier hosting. This app instead uses Score-CAM:
+---
 
+# 🧠 How Score-CAM Works
 
-Run a single forward pass to get a baseline prediction confidence.
-Extract the feature maps from the model's last convolutional block.
-Select the top-N most active channels.
-For each channel, mask the input image with that channel's activation map and re-run a forward pass to see how much it increases the target class's confidence.
-Combine the weighted channel maps into a final heatmap.
+Traditional Grad-CAM requires gradient computation using a backward pass, which significantly increases memory consumption.
 
+FetalGuard-AI instead employs **Score-CAM**, which follows these steps:
 
-Because every step is a forward pass (torch.inference_mode()), memory stays low and constant — no .backward() call is ever made.
+1. Perform a forward pass to obtain prediction probabilities.
+2. Extract feature maps from the final convolutional layer.
+3. Select the most informative activation channels.
+4. Mask the input image using each activation map.
+5. Perform additional forward passes.
+6. Weight each activation map based on confidence improvement.
+7. Combine weighted maps into the final heatmap.
 
+Because Score-CAM relies solely on forward inference (`torch.inference_mode()`), it maintains low and stable memory usage, making it ideal for deployment on resource-constrained environments such as Render's free tier.
 
-Deployment
+---
 
-This project ships with render.yaml and a Procfile for one-click deployment to Render. The app is tuned for Render's free tier (512MB RAM):
+# ☁️ Deployment
 
+The project includes:
 
-Single-threaded PyTorch (torch.set_num_threads(1))
-Score-CAM instead of Grad-CAM (no backprop memory spike)
-In-memory image cache capped at 10 images, with aggressive gc.collect() calls after each request
-JPEG compression/thumbnailing before storing images
+- `render.yaml`
+- `Procfile`
 
+for seamless deployment on **Render**.
 
+Optimizations include:
 
-Authors 
+- CPU-only PyTorch
+- Single-thread inference
+- Score-CAM (no gradient computation)
+- Memory-efficient image caching
+- Automatic garbage collection
+- JPEG compression before storage
 
+These optimizations allow the application to run comfortably within **512 MB RAM**.
 
-Natalia Mathews
-Limnisha Changkakati
+---
 
+# 👩‍💻 Authors
 
+- **Natalia Mathews** — Project Lead
+- **Limnisha Changkakati** — AI/ML Developer
+- **Dr. Geethu S Kumar** — Research Supervisor
 
+---
 
-License
+# 📄 License
 
-No license file is currently included in this repository. Add a LICENSE file to clarify usage terms if you intend to share or open-source this work.
+This repository currently does not include a license.
+
+If you intend to distribute or open-source the project, consider adding an appropriate LICENSE file such as:
+
+- MIT License
+- Apache 2.0
+- GNU GPL v3
+
+---
+
+# 🌍 Live Demo
+
+**https://fetal-ultrasound-ai.onrender.com/**
+
+> **Note:** The application is hosted on Render's free tier. Initial startup may take **30–60 seconds** if the service has been idle.
+
+---
+
+# ⭐ Highlights
+
+- Deep Learning using **DenseNet121**
+- Explainable AI with **Score-CAM**
+- Rule-Based Clinical Risk Assessment
+- Automated Ultrasound Image Quality Analysis
+- Confidence-Aware Predictions
+- Downloadable Diagnostic Reports
+- Flask REST API
+- Render Cloud Deployment
+- Memory Optimized for Low-Resource Environments

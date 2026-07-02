@@ -275,6 +275,5 @@ It is **not** a certified medical device and should not replace professional cli
 
 ### ⭐ If you found this project helpful, please consider giving it a star!
 
-Built with ❤️ using PyTorch, MONAI and Flask.
 
 </div>

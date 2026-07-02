@@ -281,9 +281,8 @@ These optimizations allow the application to run comfortably within **512 MB RAM
 
 # 👩‍💻 Authors
 
-- **Natalia Mathews** — Project Lead
-- **Limnisha Changkakati** — AI/ML Developer
-- **Dr. Geethu S Kumar** — Research Supervisor
+- **Natalia Mathews** 
+- **Limnisha Changkakati** 
 
 ---
 
